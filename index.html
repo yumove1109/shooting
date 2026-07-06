@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>シューティングゲーム</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #000;
+    height: 100%;
+    overflow: hidden;
+    touch-action: none;
+  }
+  #wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: #fff;
+    font-family: sans-serif;
+  }
+  #info {
+    margin-bottom: 8px;
+    font-size: 18px;
+    text-align: center;
+  }
+  canvas {
+    background: #001;
+    border: 2px solid #0ff;
+    touch-action: none;
+    max-width: 92vw;
+    height: auto;
+    display: block;
+  }
+  #canvasWrap {
+    position: relative;
+    max-width: 92vw;
+  }
+  #hitCountDisplay {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    color: #fff;
+    font-size: 14px;
+    background: rgba(0, 0, 0, 0.45);
+    padding: 3px 8px;
+    border-radius: 4px;
+    pointer-events: none;
+  }
+  #mobileKeyInput {
+    margin-top: 10px;
+    width: 92vw;
+    max-width: 480px;
+    font-size: 16px;
+    padding: 10px;
+    border-radius: 6px;
+    border: 2px solid #0ff;
+    background: #111;
+    color: #fff;
+    text-align: center;
+    box-sizing: border-box;
+  }
+  #bossBarWrap {
+    width: 480px;
+    height: 14px;
+    background: #333;
+    border: 1px solid #f66;
+    margin-top: 6px;
+    display: none;
+  }
+  #bossBar {
+    height: 100%;
+    width: 100%;
+    background: #f33;
+  }
+  #buttons {
+    margin-top: 10px;
+    display: flex;
+    gap: 10px;
+  }
+  button {
+    font-size: 16px;
+    padding: 8px 16px;
+    background: #0ff;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  #howto {
+    margin-top: 8px;
+    font-size: 13px;
+    color: #aaa;
+    text-align: center;
+    max-width: 480px;
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="info">
+    スコア: <span id="score">0</span>
+    ライフ: <span id="lives">3</span>
+    ステージ: <span id="stage">1</span> / 10
+  </div>
+  <div id="canvasWrap">
+    <canvas id="game" width="480" height="600"></canvas>
+    <div id="hitCountDisplay">ヒット数：0回</div>
+  </div>
+  <div id="bossBarWrap"><div id="bossBar"></div></div>
+  <div id="buttons">
+    <button id="startBtn">スタート</button>
+  </div>
+  <input id="mobileKeyInput" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="スマホの方はここをタップ→キーボードのスペースキーで発射">
+  <div id="howto">
+    ← → キー（またはスマホの場合は画面を指でタッチしたまま左右に動かす）で自機を移動します。<br>
+    弾はスペースキーかEnterキーで発射。スマホの場合は上の入力欄をタップするとキーボードが出るので、そのスペースキーで発射できます。<br>
+    敵は3種類。まっすぐ降りてくる敵、左右に揺れる敵、斜めに飛んでくる敵がいて、弾を撃ってくることもあります。<br>
+    自分の弾を敵の弾にぶつけると、その弾を消すことができます。敵本体に当てると1点、画面左上のヒット数も増えます。<br>
+    ライフは3つ。被弾すると1つ減り、しばらく無敵（少し点滅）になります。0になるとゲームオーバーです。<br>
+    各ステージはスコア10点でクリア。ステージ10はラスボス戦です。全10ステージ、進むほど敵が速く・多くなります。
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const scoreEl = document.getElementById('score');
+const livesEl = document.getElementById('lives');
+const stageEl = document.getElementById('stage');
+const startBtn = document.getElementById('startBtn');
+const bossBarWrap = document.getElementById('bossBarWrap');
+const bossBar = document.getElementById('bossBar');
+const hitCountDisplay = document.getElementById('hitCountDisplay');
+const mobileKeyInput = document.getElementById('mobileKeyInput');
+
+const W = canvas.width;
+const H = canvas.height;
+
+const TOTAL_STAGES = 10;
+const BOSS_STAGE = 10;
+const STAGE_CLEAR_SCORE = 10;
+
+let score = 0;
+let lives = 3;
+let hitCount = 0; // 自機の弾が敵自体に当たった回数
+
+// gameState: 'ready' | 'playing' | 'stageclear' | 'gameover' | 'gameclear'
+let gameState = 'ready';
+let stateTimer = 0;
+
+let stage = 1;
+let killCount = 0; // 今のステージで倒した数（=スコアと同じ増え方）
+
+// ステージ番号にあわせて難易度を計算する（数字が大きいほど難しい）
+function getStageConfig(s) {
+  const t = (Math.min(s, 9) - 1) / 8; // stage1→0, stage9→1
+  let types;
+  if (s <= 2) types = ['straight', 'straight', 'zigzag'];
+  else if (s <= 4) types = ['straight', 'zigzag', 'zigzag'];
+  else if (s <= 6) types = ['straight', 'zigzag', 'diagonal'];
+  else types = ['straight', 'zigzag', 'diagonal', 'diagonal'];
+
+  return {
+    goal: STAGE_CLEAR_SCORE,
+    spawnInterval: Math.round(42 - t * 26),        // 42 → 16
+    minSpeed: 1.5 + t * 2.0,                        // 1.5 → 3.5
+    maxSpeed: 2.6 + t * 3.0,                        // 2.6 → 5.6
+    multiChance: 0.08 + t * 0.42,                   // 0.08 → 0.5
+    shootIntervalBase: Math.round(150 - t * 80),    // 150 → 70
+    types: types
+  };
+}
+
+// 自機（プレイヤー）。かなり小さめのサイズにして当たりにくくする
+const player = {
+  w: 22,
+  h: 26,
+  x: W / 2 - 11,
+  y: H - 55,
+  speed: 5,
+  movingLeft: false,
+  movingRight: false,
+  invincible: 0 // 被弾後の無敵タイマー
+};
+
+let bullets = [];       // 自機の弾
+let enemies = [];       // 通常の敵
+let enemyBullets = [];  // 敵・ラスボスの弾
+let boss = null;
+
+let enemyTimer = 0;
+let shootCooldown = 0;
+
+function resetGame() {
+  score = 0;
+  lives = 3;
+  hitCount = 0;
+  stage = 1;
+  killCount = 0;
+  bullets = [];
+  enemies = [];
+  enemyBullets = [];
+  boss = null;
+  enemyTimer = 0;
+  player.x = W / 2 - player.w / 2;
+  player.invincible = 0;
+  scoreEl.textContent = score;
+  livesEl.textContent = lives;
+  stageEl.textContent = stage;
+  hitCountDisplay.textContent = 'ヒット数：0回';
+  bossBarWrap.style.display = 'none';
+  gameState = 'playing';
+}
+
+function goToNextStage() {
+  stage++;
+  stageEl.textContent = stage;
+  bullets = [];
+  enemies = [];
+  enemyBullets = [];
+  enemyTimer = 0;
+  killCount = 0;
+
+  if (stage === BOSS_STAGE) {
+    spawnBoss();
+    bossBarWrap.style.display = 'block';
+  }
+  gameState = 'playing';
+}
+
+function spawnEnemy() {
+  const cfg = getStageConfig(stage);
+  const type = cfg.types[Math.floor(Math.random() * cfg.types.length)];
+  const speed = cfg.minSpeed + Math.random() * (cfg.maxSpeed - cfg.minSpeed);
+
+  if (type === 'straight') {
+    const size = 30;
+    const x = Math.random() * (W - size);
+    enemies.push({
+      type: 'straight',
+      x: x, y: -size, w: size, h: size,
+      speed: speed,
+      shootTimer: Math.floor(Math.random() * 80),
+      shootInterval: cfg.shootIntervalBase + Math.floor(Math.random() * 60)
+    });
+  } else if (type === 'zigzag') {
+    const size = 28;
+    const baseX = Math.random() * (W - size);
+    enemies.push({
+      type: 'zigzag',
+      x: baseX, y: -size, w: size, h: size,
+      baseX: baseX,
+      speed: speed * 0.7,
+      amplitude: 35 + Math.random() * 30,
+      freq: 0.03 + Math.random() * 0.02,
+      phase: Math.random() * Math.PI * 2,
+      shootTimer: Math.floor(Math.random() * 80),
+      shootInterval: cfg.shootIntervalBase - 20 + Math.floor(Math.random() * 60)
+    });
+  } else if (type === 'diagonal') {
+    const size = 28;
+    const x = Math.random() * (W - size);
+    const dir = Math.random() < 0.5 ? -1 : 1;
+    enemies.push({
+      type: 'diagonal',
+      x: x, y: -size, w: size, h: size,
+      vx: dir * (1.4 + Math.random() * 1.8),
+      vy: 1.8 + Math.random() * 1.4
+    });
+  }
+}
+
+function spawnBoss() {
+  boss = {
+    x: W / 2 - 60,
+    y: 50,
+    w: 120,
+    h: 60,
+    hp: 200,
+    maxHp: 200,
+    speed: 2.5,
+    dir: 1,
+    shootTimer: 0
+  };
+}
+
+function rectsOverlap(a, b) {
+  return a.x < b.x + b.w &&
+         a.x + a.w > b.x &&
+         a.y < b.y + b.h &&
+         a.y + a.h > b.y;
+}
+
+// 自機の見た目に合わせた当たり判定用の小さめの箱
+// player.w/h は移動範囲の制限に使う箱なので、見た目とズレないよう別で用意する
+function getPlayerHitbox() {
+  const hitW = player.w * 0.55;
+  const hitH = player.h * 0.6;
+  return {
+    x: player.x + (player.w - hitW) / 2,
+    y: player.y + (player.h - hitH) / 2,
+    w: hitW,
+    h: hitH
+  };
+}
+
+// 敵の見た目（ひし形・矢形など）に合わせた当たり判定用の小さめの箱
+// 敵の絵は四角い枠の四隅までは埋まっていないので、判定も見た目に近いサイズに絞る
+function getEnemyHitbox(e) {
+  const hitW = e.w * 0.62;
+  const hitH = e.h * 0.62;
+  return {
+    x: e.x + (e.w - hitW) / 2,
+    y: e.y + (e.h - hitH) / 2,
+    w: hitW,
+    h: hitH
+  };
+}
+
+// 被弾したときに呼ぶ。無敵時間中はダメージを受けない
+function hitPlayer() {
+  if (player.invincible > 0) return;
+  lives--;
+  livesEl.textContent = lives;
+  player.invincible = 100; // 約1.6秒の無敵時間
+  if (lives <= 0) {
+    gameState = 'gameover';
+  }
+}
+
+function fireEnemyBullet(e) {
+  const ex = e.x + e.w / 2;
+  const ey = e.y + e.h;
+  const aimX = (player.x + player.w / 2 - ex) * 0.01;
+  enemyBullets.push({
+    x: ex - 4, y: ey, w: 8, h: 12,
+    vx: Math.max(-1.2, Math.min(1.2, aimX)),
+    vy: 3.5,
+    color: '#f6f'
+  });
+}
+
+function update() {
+  if (player.invincible > 0) player.invincible--;
+
+  // 自機移動
+  if (player.movingLeft) player.x -= player.speed;
+  if (player.movingRight) player.x += player.speed;
+  if (player.x < 0) player.x = 0;
+  if (player.x + player.w > W) player.x = W - player.w;
+
+  if (shootCooldown > 0) shootCooldown--;
+
+  // 自機の弾の移動
+  bullets.forEach(b => b.y -= 8);
+  bullets = bullets.filter(b => b.y + b.h > 0);
+
+  // 敵・ボスの弾の移動（共通）
+  enemyBullets.forEach(b => {
+    b.x += b.vx;
+    b.y += b.vy;
+  });
+  enemyBullets = enemyBullets.filter(b => b.y < H + 20 && b.x > -20 && b.x < W + 20);
+
+  // 自機の弾が敵の弾に当たったら、両方消える（得点にはならない）
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    for (let j = enemyBullets.length - 1; j >= 0; j--) {
+      if (bullets[i] && enemyBullets[j] && rectsOverlap(bullets[i], enemyBullets[j])) {
+        bullets.splice(i, 1);
+        enemyBullets.splice(j, 1);
+        break;
+      }
+    }
+  }
+
+  if (stage < BOSS_STAGE) {
+    // ---- 通常ステージ ----
+    const cfg = getStageConfig(stage);
+    enemyTimer++;
+    if (enemyTimer > cfg.spawnInterval) {
+      spawnEnemy();
+      if (Math.random() < cfg.multiChance) spawnEnemy();
+      enemyTimer = 0;
+    }
+
+    // 敵の移動
+    enemies.forEach(e => {
+      if (e.type === 'straight') {
+        e.y += e.speed;
+      } else if (e.type === 'zigzag') {
+        e.y += e.speed;
+        e.phase += e.freq;
+        e.x = e.baseX + Math.sin(e.phase) * e.amplitude;
+      } else if (e.type === 'diagonal') {
+        e.x += e.vx;
+        e.y += e.vy;
+      }
+
+      // 弾を撃つ敵の処理
+      if (e.shootInterval) {
+        e.shootTimer++;
+        if (e.shootTimer > e.shootInterval) {
+          e.shootTimer = 0;
+          fireEnemyBullet(e);
+        }
+      }
+    });
+
+    // 画面外に出た敵は、自機に触れていないので何もせず消えるだけ（ダメージなし）
+    enemies = enemies.filter(e => {
+      return e.y <= H && e.x >= -60 && e.x <= W + 60;
+    });
+
+    // 自機の弾と敵の当たり判定
+    for (let i = enemies.length - 1; i >= 0; i--) {
+      for (let j = bullets.length - 1; j >= 0; j--) {
+        if (enemies[i] && bullets[j] && rectsOverlap(getEnemyHitbox(enemies[i]), bullets[j])) {
+          enemies.splice(i, 1);
+          bullets.splice(j, 1);
+          score += 1;
+          scoreEl.textContent = score;
+          killCount++;
+          hitCount++;
+          hitCountDisplay.textContent = 'ヒット数：' + hitCount + '回';
+          break;
+        }
+      }
+    }
+
+    // 自機と敵の当たり判定（本体が明らかにぶつかった場合のみ）
+    const playerBox = getPlayerHitbox();
+    for (let i = enemies.length - 1; i >= 0; i--) {
+      if (enemies[i] && rectsOverlap(playerBox, getEnemyHitbox(enemies[i]))) {
+        enemies.splice(i, 1);
+        hitPlayer();
+      }
+    }
+
+    if (gameState === 'playing' && killCount >= cfg.goal) {
+      gameState = 'stageclear';
+      stateTimer = 0;
+    }
+
+  } else {
+    // ---- ラスボスステージ ----
+    if (boss) {
+      boss.x += boss.speed * boss.dir;
+      if (boss.x < 0 || boss.x + boss.w > W) {
+        boss.dir *= -1;
+        boss.x = Math.max(0, Math.min(boss.x, W - boss.w));
+      }
+
+      boss.shootTimer++;
+      if (boss.shootTimer > 55) {
+        boss.shootTimer = 0;
+        for (let k = -1; k <= 1; k++) {
+          enemyBullets.push({
+            x: boss.x + boss.w / 2 - 4,
+            y: boss.y + boss.h,
+            w: 8, h: 16,
+            vx: k * 1.5, vy: 4,
+            color: '#ff0'
+          });
+        }
+      }
+
+      for (let j = bullets.length - 1; j >= 0; j--) {
+        if (rectsOverlap(boss, bullets[j])) {
+          bullets.splice(j, 1);
+          boss.hp -= 5;
+          score += 1;
+          scoreEl.textContent = score;
+          hitCount++;
+          hitCountDisplay.textContent = 'ヒット数：' + hitCount + '回';
+          if (boss.hp <= 0) boss.hp = 0;
+        }
+      }
+      bossBar.style.width = Math.max(0, (boss.hp / boss.maxHp) * 100) + '%';
+
+      if (boss.hp <= 0) {
+        boss = null;
+        gameState = 'gameclear';
+      }
+    }
+
+    // ボスの弾と自機の当たり判定
+    const playerBox = getPlayerHitbox();
+    for (let i = enemyBullets.length - 1; i >= 0; i--) {
+      if (rectsOverlap(playerBox, enemyBullets[i])) {
+        enemyBullets.splice(i, 1);
+        hitPlayer();
+      }
+    }
+  }
+
+  // 通常ステージの敵弾と自機の当たり判定
+  if (stage < BOSS_STAGE) {
+    const playerBox = getPlayerHitbox();
+    for (let i = enemyBullets.length - 1; i >= 0; i--) {
+      if (rectsOverlap(playerBox, enemyBullets[i])) {
+        enemyBullets.splice(i, 1);
+        hitPlayer();
+      }
+    }
+  }
+}
+
+function drawPlayer() {
+  // 無敵中は点滅させる
+  if (player.invincible > 0 && Math.floor(player.invincible / 6) % 2 === 0) {
+    return;
+  }
+
+  const cx = player.x + player.w / 2;
+  const cy = player.y + player.h / 2;
+  const w = player.w;
+  const h = player.h;
+
+  ctx.save();
+  ctx.translate(cx, cy);
+
+  // 肩・パーカー（紫）
+  ctx.fillStyle = '#3a1f7a';
+  ctx.beginPath();
+  ctx.moveTo(-w / 2, h / 2);
+  ctx.lineTo(-w / 3, h * 0.30);
+  ctx.lineTo(w / 3, h * 0.30);
+  ctx.lineTo(w / 2, h / 2);
+  ctx.closePath();
+  ctx.fill();
+
+  // 顔（肌色の丸）
+  ctx.fillStyle = '#f3c9a0';
+  ctx.beginPath();
+  ctx.ellipse(0, -h * 0.05, w * 0.36, h * 0.34, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 髪（黒、頭の上半分にギザギザ）
+  ctx.fillStyle = '#1a1410';
+  ctx.beginPath();
+  ctx.moveTo(-w * 0.38, -h * 0.08);
+  ctx.lineTo(-w * 0.32, -h * 0.46);
+  ctx.lineTo(-w * 0.16, -h * 0.22);
+  ctx.lineTo(-w * 0.05, -h * 0.50);
+  ctx.lineTo(w * 0.05, -h * 0.22);
+  ctx.lineTo(w * 0.17, -h * 0.50);
+  ctx.lineTo(w * 0.30, -h * 0.20);
+  ctx.lineTo(w * 0.38, -h * 0.08);
+  ctx.closePath();
+  ctx.fill();
+
+  // 目
+  ctx.fillStyle = '#2a1c14';
+  ctx.beginPath();
+  ctx.arc(-w * 0.13, -h * 0.02, Math.max(1, w * 0.05), 0, Math.PI * 2);
+  ctx.arc(w * 0.13, -h * 0.02, Math.max(1, w * 0.05), 0, Math.PI * 2);
+  ctx.fill();
+
+  // 口（小さな笑顔）
+  ctx.strokeStyle = '#8a4b3a';
+  ctx.lineWidth = Math.max(1, w * 0.04);
+  ctx.beginPath();
+  ctx.arc(0, h * 0.10, w * 0.12, 0.15 * Math.PI, 0.85 * Math.PI);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+function drawBullets() {
+  ctx.fillStyle = '#ff0';
+  bullets.forEach(b => {
+    ctx.fillRect(b.x, b.y, b.w, b.h);
+  });
+}
+
+function drawEnemyBullets() {
+  enemyBullets.forEach(b => {
+    ctx.fillStyle = b.color || '#f6f';
+    ctx.beginPath();
+    ctx.ellipse(b.x + b.w / 2, b.y + b.h / 2, b.w / 2, b.h / 2, 0, 0, Math.PI * 2);
+    ctx.fill();
+  });
+}
+
+function drawEnemies() {
+  enemies.forEach(e => {
+    const cx = e.x + e.w / 2;
+    const cy = e.y + e.h / 2;
+
+    if (e.type === 'straight') {
+      // 赤いダイヤ型ドローン
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.fillStyle = '#e33';
+      ctx.beginPath();
+      ctx.moveTo(0, -e.h / 2);
+      ctx.lineTo(e.w / 2, 0);
+      ctx.lineTo(0, e.h / 2);
+      ctx.lineTo(-e.w / 2, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#900';
+      ctx.beginPath();
+      ctx.arc(0, 0, e.w / 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+    } else if (e.type === 'zigzag') {
+      // オレンジの蛾みたいな敵
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.fillStyle = '#fa3';
+      ctx.beginPath();
+      ctx.moveTo(0, e.h / 2);
+      ctx.lineTo(-e.w / 2, -e.h / 2);
+      ctx.lineTo(0, -e.h / 4);
+      ctx.lineTo(e.w / 2, -e.h / 2);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#a50';
+      ctx.beginPath();
+      ctx.arc(0, -e.h / 8, e.w / 7, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+    } else if (e.type === 'diagonal') {
+      // 紫の矢型敵。進行方向を向く
+      const angle = Math.atan2(e.vy, e.vx);
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(angle + Math.PI / 2);
+      ctx.fillStyle = '#a3f';
+      ctx.beginPath();
+      ctx.moveTo(0, -e.h / 2);
+      ctx.lineTo(e.w / 2, e.h / 2);
+      ctx.lineTo(0, e.h / 4);
+      ctx.lineTo(-e.w / 2, e.h / 2);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+  });
+}
+
+function drawBoss() {
+  if (!boss) return;
+  ctx.fillStyle = '#a0f';
+  ctx.fillRect(boss.x, boss.y, boss.w, boss.h);
+  ctx.fillStyle = '#fff';
+  ctx.font = '14px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('ラスボス', boss.x + boss.w / 2, boss.y + boss.h / 2 + 5);
+}
+
+function drawOverlayText(lines) {
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#fff';
+  ctx.textAlign = 'center';
+  lines.forEach((line, i) => {
+    ctx.font = 'bold ' + line.size + 'px sans-serif';
+    ctx.fillText(line.text, W / 2, H / 2 - 20 + i * (line.size + 10));
+  });
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+
+  // 背景の点（星っぽい演出）
+  ctx.fillStyle = '#113';
+  for (let i = 0; i < 40; i++) {
+    const sx = (i * 53) % W;
+    const sy = (i * 97 + (Date.now() / 20)) % H;
+    ctx.fillRect(sx, sy, 2, 2);
+  }
+
+  drawPlayer();
+  drawBullets();
+  drawEnemyBullets();
+
+  if (stage < BOSS_STAGE) {
+    drawEnemies();
+  } else {
+    drawBoss();
+  }
+
+  if (gameState === 'ready') {
+    drawOverlayText([{ text: 'スタートボタンを押してね', size: 24 }]);
+  } else if (gameState === 'stageclear') {
+    drawOverlayText([
+      { text: 'Clear！', size: 52 },
+      { text: 'ステージ ' + stage + ' クリア', size: 18 },
+      { text: '次のステージへ進みます', size: 14 }
+    ]);
+  } else if (gameState === 'gameover') {
+    drawOverlayText([
+      { text: 'ゲームオーバー', size: 28 },
+      { text: 'スコア: ' + score, size: 18 }
+    ]);
+  } else if (gameState === 'gameclear') {
+    drawOverlayText([
+      { text: 'ラスボス撃破！ゲームクリア！', size: 24 },
+      { text: 'スコア: ' + score, size: 18 }
+    ]);
+  }
+}
+
+function loop() {
+  if (gameState === 'playing') {
+    update();
+  } else if (gameState === 'stageclear') {
+    stateTimer++;
+    if (stateTimer > 90) {
+      goToNextStage();
+    }
+  }
+  draw();
+  requestAnimationFrame(loop);
+}
+
+function shoot() {
+  if (gameState !== 'playing' || shootCooldown > 0) return;
+  bullets.push({
+    x: player.x + player.w / 2 - 3,
+    y: player.y - 10,
+    w: 6, h: 14
+  });
+  shootCooldown = 12;
+}
+
+// キーボード操作
+document.addEventListener('keydown', (e) => {
+  if (e.code === 'ArrowLeft') player.movingLeft = true;
+  if (e.code === 'ArrowRight') player.movingRight = true;
+  if (e.code === 'Space' || e.code === 'Enter') {
+    e.preventDefault();
+    shoot();
+  }
+});
+document.addEventListener('keyup', (e) => {
+  if (e.code === 'ArrowLeft') player.movingLeft = false;
+  if (e.code === 'ArrowRight') player.movingRight = false;
+});
+
+// スマホ・タッチ操作：指を触れたまま左右に動かすと、その位置に自機が追従する
+function moveToTouch(e) {
+  const rect = canvas.getBoundingClientRect();
+  const t = e.touches[0];
+  // canvasが画面幅に合わせて縮小表示されていても正しい位置に変換する
+  const scale = W / rect.width;
+  const touchX = (t.clientX - rect.left) * scale;
+  let targetX = touchX - player.w / 2;
+  if (targetX < 0) targetX = 0;
+  if (targetX + player.w > W) targetX = W - player.w;
+  player.x = targetX;
+}
+
+canvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  moveToTouch(e);
+}, { passive: false });
+
+canvas.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  moveToTouch(e);
+}, { passive: false });
+
+canvas.addEventListener('touchend', (e) => {
+  e.preventDefault();
+}, { passive: false });
+
+// スマホの画面下のキーボード：スペースキーで発射する
+mobileKeyInput.addEventListener('keydown', (e) => {
+  if (e.code === 'Space' || e.key === ' ') {
+    e.preventDefault();
+    shoot();
+  }
+});
+mobileKeyInput.addEventListener('input', () => {
+  // スマホによってはkeydownでスペースを検知できないため、入力内容でも判定する
+  if (mobileKeyInput.value.indexOf(' ') !== -1) {
+    shoot();
+  }
+  mobileKeyInput.value = '';
+});
+
+startBtn.addEventListener('click', () => {
+  resetGame();
+});
+
+draw();
+loop();
+</script>
+</body>
+</html>
