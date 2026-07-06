@@ -38,6 +38,8 @@
   #canvasWrap {
     position: relative;
     max-width: 92vw;
+    margin-top: 0px;
+    transition: margin-top 0.2s ease;
   }
   #hitCountDisplay {
     position: absolute;
@@ -135,6 +137,8 @@ const bossBarWrap = document.getElementById('bossBarWrap');
 const bossBar = document.getElementById('bossBar');
 const hitCountDisplay = document.getElementById('hitCountDisplay');
 const mobileKeyInput = document.getElementById('mobileKeyInput');
+const canvasWrap = document.getElementById('canvasWrap');
+const howto = document.getElementById('howto');
 
 const W = canvas.width;
 const H = canvas.height;
@@ -785,6 +789,24 @@ mobileKeyInput.addEventListener('input', () => {
     shoot();
   }
   mobileKeyInput.value = '';
+});
+
+// スマホでキーボードが出ると、下の説明文が隠れる分ゲーム画面が見づらくなるため、
+// タップしてキーボードが出ている間は説明文を隠し、その分ゲーム画面を下にずらす
+function isTouchDevice() {
+  return ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+}
+
+mobileKeyInput.addEventListener('focus', () => {
+  if (!isTouchDevice()) return;
+  const howtoHeight = howto.offsetHeight;
+  howto.style.display = 'none';
+  canvasWrap.style.marginTop = howtoHeight + 'px';
+});
+
+mobileKeyInput.addEventListener('blur', () => {
+  howto.style.display = '';
+  canvasWrap.style.marginTop = '0px';
 });
 
 startBtn.addEventListener('click', () => {
